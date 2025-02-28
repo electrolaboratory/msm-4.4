@@ -1966,7 +1966,7 @@ done:
 int smblib_get_prop_system_temp_level(struct smb_charger *chg,
 				union power_supply_propval *val)
 {
-	val->intval = chg->system_temp_level;
+	val->intval = 50;
 	return 0;
 }
 
@@ -2109,27 +2109,6 @@ int smblib_set_prop_batt_capacity(struct smb_charger *chg,
 int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 				const union power_supply_propval *val)
 {
-	if (val->intval < 0)
-		return -EINVAL;
-
-	if (chg->thermal_levels <= 0)
-		return -EINVAL;
-
-	if (val->intval > chg->thermal_levels)
-		return -EINVAL;
-
-	chg->system_temp_level = val->intval;
-
-	if (chg->system_temp_level == chg->thermal_levels)
-		return vote(chg->chg_disable_votable,
-			THERMAL_DAEMON_VOTER, true, 0);
-
-	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
-	if (chg->system_temp_level == 0)
-		return vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, false, 0);
-
-	vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, true,
-			chg->thermal_mitigation[chg->system_temp_level]);
 	return 0;
 }
 
