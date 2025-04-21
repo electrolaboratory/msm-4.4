@@ -44,6 +44,8 @@
 #include <linux/fastchg.h>
 #endif
 
+static unsigned int bypass_charging = 0;
+
 #define smblib_err(chg, fmt, ...)		\
 	pr_err("%s: %s: " fmt, chg->name,	\
 		__func__, ##__VA_ARGS__)	\
@@ -1728,9 +1730,13 @@ int smblib_vbus_regulator_is_enabled(struct regulator_dev *rdev)
 int smblib_get_prop_input_suspend(struct smb_charger *chg,
 				  union power_supply_propval *val)
 {
-	val->intval
-		= (get_client_vote(chg->usb_icl_votable, USER_VOTER) == 0)
-		 && get_client_vote(chg->dc_suspend_votable, USER_VOTER);
+	if ((get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1)) {
+		val->intval = 1;
+	} else if (bypass_charging) {
+		val->intval = 2;
+	} else {
+		val->intval = 0;
+	}
 	return 0;
 }
 
@@ -1738,10 +1744,13 @@ int smblib_get_prop_input_suspend(struct smb_charger *chg,
 int smblib_get_prop_charging_enabled(struct smb_charger *chg,
 					union power_supply_propval *val)
 {
-	val->intval = !((get_client_vote(chg->usb_icl_votable,
-			USER_VOTER) == 0) &&
-			get_client_vote(chg->dc_suspend_votable, USER_VOTER));
-
+	if ((get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1)) {
+		val->intval = 1;
+	} else if (bypass_charging) {
+		val->intval = 2;
+	} else {
+		val->intval = 0;
+	}
 	return 0;
 }
 
@@ -2049,11 +2058,15 @@ int smblib_set_prop_input_suspend(struct smb_charger *chg,
 	int rc;
 
 	/* vote 0mA when suspended */
-	rc = vote(chg->usb_icl_votable, USER_VOTER, (bool)val->intval, 0);
-	if (rc < 0) {
-		smblib_err(chg, "Couldn't vote to %s USB rc=%d\n",
-			(bool)val->intval ? "suspend" : "resume", rc);
-		return rc;
+	if (val->intval == 1) {
+ 		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 1, 0);
+ 		bypass_charging = 0;
+ 	} else if (val->intval == 2) {
+ 		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
+ 		bypass_charging = 1;
+ 	} else {
+ 		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
+ 		bypass_charging = 0;
 	}
 
 	rc = vote(chg->dc_suspend_votable, USER_VOTER, (bool)val->intval, 0);
@@ -2074,11 +2087,15 @@ int smblib_set_prop_charging_enabled(struct smb_charger *chg,
 	int rc;
 
 	/* vote 0mA when suspended */
-	rc = vote(chg->usb_icl_votable, USER_VOTER, !(bool)val->intval, 0);
-	if (rc < 0) {
-		smblib_err(chg, "Couldn't vote to %s USB rc=%d\n",
-			(bool)val->intval ? "suspend" : "resume", rc);
-		return rc;
+	if (val->intval == 1) {
+ 		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 1, 0);
+ 		bypass_charging = 0;
+ 	} else if (val->intval == 2) {
+ 		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
+ 		bypass_charging = 1;
+ 	} else {
+ 		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
+ 		bypass_charging = 0;
 	}
 
 	rc = vote(chg->dc_suspend_votable, USER_VOTER, !(bool)val->intval, 0);
@@ -2109,6 +2126,8 @@ int smblib_set_prop_batt_capacity(struct smb_charger *chg,
 int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 				const union power_supply_propval *val)
 {
+	int fake_temp_level;
+
 	if (val->intval < 0)
 		return -EINVAL;
 
@@ -2120,12 +2139,26 @@ int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 
 	chg->system_temp_level = val->intval;
 
+	if (get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1) {
+ 		pr_info("%s bypass charging enabled",__FUNCTION__);
+ 		return vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, true, 0);
+ 	}
+ 
+ 	if (bypass_charging) {
+ 		fake_temp_level = chg->system_temp_level-2;
+ 		if (fake_temp_level < 0) fake_temp_level = 0;
+ 		pr_info("%s limited charging enabled %d",__FUNCTION__, fake_temp_level);
+ 		return vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, true,
+ 			chg->thermal_mitigation[fake_temp_level]);
+ 	}
+
 	if (chg->system_temp_level == chg->thermal_levels)
 		return vote(chg->chg_disable_votable,
 			THERMAL_DAEMON_VOTER, true, 0);
 
 	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
-	if (chg->system_temp_level == 0)
+//	if (chg->system_temp_level == 0)
+		vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, false, 0);
 		return vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, false, 0);
 
 	vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, true,
